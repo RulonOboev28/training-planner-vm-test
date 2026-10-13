@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache">
+  <title>План тренировок</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <section id="screen-role" class="screen">
+      <h1>Кто вы?</h1>
+      <button type="button" class="choice-btn" data-role="coach">Тренер</button>
+      <button type="button" class="choice-btn" data-role="athlete">Спортсmen</button>
+    </section>
+
+    <section id="screen-auth" class="screen" hidden>
+      <p class="back"><button type="button" class="link" id="back-from-auth">← Назад</button></p>
+      <h1 id="auth-role-title">Тренер</h1>
+
+      <div class="mode-switch">
+        <button type="button" class="mode-btn mode-active" data-mode="login">Вход</button>
+        <button type="button" class="mode-btn" data-mode="register">Регистрация</button>
+      </div>
+
+      <div id="panel-login">
+        <label>Логин<input id="login-login" type="text" autocomplete="username"></label>
+        <label>Пароль<input id="login-password" type="password" autocomplete="current-password"></label>
+        <button type="button" id="btn-do-login" class="primary">Войти</button>
+        <p id="login-error" class="error" hidden></p>
+      </div>
+
+      <div id="panel-register" hidden>
+        <label>Почта<input id="reg-email" type="email" autocomplete="email"></label>
+        <label>Логин (уникальный псевдоним)<input id="reg-login" type="text" autocomplete="username" placeholder="например ivan_runner"></label>
+        <label>Пароль (от 8 символов)<input id="reg-password" type="password" autocomplete="new-password"></label>
+        <button type="button" id="btn-do-register" class="primary">Зарегистрироваться</button>
+        <p id="register-error" class="error" hidden></p>
+      </div>
+    </section>
+
+    <section id="screen-coach-home" class="screen" hidden>
+      <header class="top">
+        <h1>Кабинет тренера</h1>
+        <button type="button" class="link btn-logout">Выйти</button>
+      </header>
+
+      <div class="step-block coach-section">
+        <h2 class="section-title">Пригласить спортсmena</h2>
+        <p class="invite-warn coach-warn">
+          Введите <strong>логин</strong> с сайта (имя пользователя при регистрации).
+          Повторное приглашение — не чаще одного раза в сутки.
+        </p>
+        <label>Логин спортсmena
+          <input id="coach-invite-login" type="text" autocomplete="off" placeholder="например ivan_web">
+        </label>
+        <button type="button" id="btn-coach-invite" class="primary">Отправить приглашение</button>
+        <p id="coach-invite-error" class="error" hidden></p>
+      </div>
+
+      <div class="step-block coach-section">
+        <h2 class="section-title">Приглашения</h2>
+        <ul id="coach-invites-list" class="plain-list"></ul>
+      </div>
+
+      <div class="step-block coach-section">
+        <h2 class="section-title">Группы и отчёты</h2>
+        <p id="coach-roster-meta" class="hint"></p>
+        <ul id="coach-groups-list" class="coach-groups-list"></ul>
+        <h3 class="subsection-title">Без подгруппы в плане</h3>
+        <ul id="coach-ungrouped-list" class="coach-member-list"></ul>
+      </div>
+
+      <div id="coach-athlete-panel" class="step-block coach-section coach-athlete-panel" hidden>
+        <header class="coach-athlete-header">
+          <h2 id="coach-athlete-title" class="section-title">Спортсmen</h2>
+          <button type="button" id="coach-athlete-close" class="link">Свернуть</button>
+        </header>
+        <div id="coach-athlete-body"></div>
+      </div>
+
+      <div class="step-block coach-section">
+        <h2 class="section-title">Опубликовать план</h2>
+        <p class="hint">Файл <code>publish_pack.json</code> из конструктора (Файл → Экспорт пакета).</p>
+        <label class="file-label">
+          JSON-пакет
+          <input id="coach-publish-file" type="file" accept=".json,application/json">
+        </label>
+        <button type="button" id="btn-coach-publish" class="primary">Опубликовать на сервер</button>
+        <p id="coach-publish-result" class="hint publish-result" hidden></p>
+        <p id="coach-publish-error" class="error" hidden></p>
+      </div>
+    </section>
+
+    <section id="screen-athlete-plan" class="screen" hidden>
+      <header class="top">
+        <h1 id="athlete-plan-title">Мой план</h1>
+        <button type="button" class="link btn-logout">Выйти</button>
+      </header>
+      <div id="athlete-invites" class="invite-block" hidden></div>
+      <p id="athlete-plan-status" class="hint plan-status"></p>
+      <div id="plan-canvas" class="plan-canvas" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <dialog id="exercise-dialog" class="exercise-dialog">
+    <form method="dialog">
+      <h2 id="exercise-dialog-title">Упражнение</h2>
+      <dl id="exercise-dialog-body" class="detail-list"></dl>
+      <button type="submit" class="primary">Закрыть</button>
+    </form>
+  </dialog>
+  <script src="app.js?v=9"></script>
+  <script src="report-shared.js?v=1"></script>
+  <script src="athlete-report.js?v=2"></script>
+  <script src="coach-reports.js?v=1"></script>
+</body>
+</html>

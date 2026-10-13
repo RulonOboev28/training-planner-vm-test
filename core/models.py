@@ -1,0 +1,1008 @@
+"""Модель данных конструктора тренировочного плана.
+
+Иерархия из 6 уровней:
+    Упражнение -> Тренировка -> Микроцикл -> Мезоцикл -> Макроцикл -> Годичный план
+
+Каждый элемент хранит собственную геометрию (pos_x, pos_y) и исходящие связи
+(стрелки). Благодаря этому позиции и связи сохраняются вместе с элементом — как
+в составе плана, так и при сохранении элемента в библиотеку как шаблона.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, Iterator, List, Optional, Type
+import uuid
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Перечисления
+# ──────────────────────────────────────────────────────────────────────────
+
+class HierarchyLevel(Enum):
+    EXERCISE = 1
+    WORKOUT = 2
+    MICROCYCLE = 3
+    MESOCYCLE = 4
+    MACROCYCLE = 5
+    ANNUAL = 6
+
+
+# Множественное имя уровня (что мы видим на полотне)
+LEVEL_NAMES: Dict[HierarchyLevel, str] = {
+    HierarchyLevel.EXERCISE: "Упражнения",
+    HierarchyLevel.WORKOUT: "Тренировки",
+    HierarchyLevel.MICROCYCLE: "Микроциклы",
+    HierarchyLevel.MESOCYCLE: "Мезоциклы",
+    HierarchyLevel.MACROCYCLE: "Макроциклы",
+    HierarchyLevel.ANNUAL: "Годичный план",
+}
+
+# Имя одного элемента уровня (в единственном числе)
+LEVEL_ITEM_NAMES: Dict[HierarchyLevel, str] = {
+    HierarchyLevel.EXERCISE: "упражнение",
+    HierarchyLevel.WORKOUT: "тренировка",
+    HierarchyLevel.MICROCYCLE: "микроцикл",
+    HierarchyLevel.MESOCYCLE: "мезоцикл",
+    HierarchyLevel.MACROCYCLE: "макроцикл",
+    HierarchyLevel.ANNUAL: "годичный план",
+}
+
+
+class ExerciseType(Enum):
+    STRENGTH = "Силовое"
+    ENDURANCE = "Выносливость"
+    TEMPO = "Темповое"
+    SPEED = "Скоростное"
+    TECHNICAL = "Техническое"
+    RECOVERY = "Восстановительное"
+
+
+class CycleType(Enum):
+    INTRO = "Втягивающий"
+    BASE = "Базовый"
+    CONTROL = "Контрольно-подготовительный"
+    COMPETITION = "Соревновательный"
+    RECOVERY = "Восстановительный"
+
+
+# Цвета плиток по типу упражнения (палитра проекта)
+EXERCISE_TYPE_COLORS: Dict[ExerciseType, str] = {
+    ExerciseType.STRENGTH: "#c6515c",
+    ExerciseType.ENDURANCE: "#524f9d",
+    ExerciseType.TEMPO: "#8a5286",
+    ExerciseType.SPEED: "#600095",
+    ExerciseType.TECHNICAL: "#1e2786",
+    ExerciseType.RECOVERY: "#400072",
+}
+
+# Цвета плиток по типу цикла
+CYCLE_TYPE_COLORS: Dict[CycleType, str] = {
+    CycleType.INTRO: "#524f9d",
+    CycleType.BASE: "#1e2786",
+    CycleType.CONTROL: "#8a5286",
+    CycleType.COMPETITION: "#c6515c",
+    CycleType.RECOVERY: "#400072",
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Спортсмены группы (для публикации на сайт)
+# ──────────────────────────────────────────────────────────────────────────
+
+ATHLETE_GENDER_MALE = "male"
+ATHLETE_GENDER_FEMALE = "female"
+ATHLETE_GENDER_LABELS: Dict[str, str] = {
+    "": "Не указан",
+    ATHLETE_GENDER_MALE: "Мальчик",
+    ATHLETE_GENDER_FEMALE: "Девочка",
+}
+
+
+@dataclass
+class AthleteGroup:
+    """Подгруппа спортсmenов в плане (как коллекция в библиотеке)."""
+
+    id: str = field(default_factory=new_id)
+    title: str = "Группа"
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "title": self.title}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AthleteGroup":
+        return cls(id=d.get("id", new_id()), title=d.get("title", "Группа"))
+
+
+@dataclass
+class AthleteProfile:
+    """Профиль спортсмена в рамках одного тренировочного плана / группы."""
+
+    id: str = field(default_factory=new_id)
+    display_name: str = ""
+    login: str = ""
+    gender: str = ""
+    group_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "display_name": self.display_name,
+            "login": self.login,
+        }
+        if self.gender:
+            data["gender"] = self.gender
+        if self.group_ids:
+            data["group_ids"] = list(self.group_ids)
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AthleteProfile":
+        return cls(
+            id=d.get("id", new_id()),
+            display_name=d.get("display_name", ""),
+            login=d.get("login", ""),
+            gender=d.get("gender", ""),
+            group_ids=list(d.get("group_ids", [])),
+        )
+
+
+def exercise_visible_to_athlete(plan: "TrainingPlan", element, athlete_id: str) -> bool:
+    if element.assigned_to_all:
+        return True
+    if athlete_id in element.assigned_athlete_ids:
+        return True
+    athlete = plan.athlete_by_id(athlete_id)
+    if athlete is None:
+        return False
+    group_ids = set(getattr(element, "assigned_group_ids", []) or [])
+    if group_ids & set(athlete.group_ids):
+        return True
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Связь (стрелка)
+# ──────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Connection:
+    target_id: str
+    kind: str = "sequence"  # sequence | parallel
+
+    def to_dict(self) -> dict:
+        return {"target_id": self.target_id, "kind": self.kind}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Connection":
+        return cls(target_id=d["target_id"], kind=d.get("kind", "sequence"))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Элементы
+# ──────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Exercise:
+    id: str = field(default_factory=new_id)
+    title: str = "Упражнение"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    exercise_type: ExerciseType = ExerciseType.ENDURANCE
+    duration_minutes: int = 0
+    volume_km: float = 0.0
+    intensity_percent: int = 0
+    hr_zone: str = ""
+    weight_kg: float = 0.0
+    sets: int = 0
+    reps: int = 0
+    rest_seconds: int = 0
+    equipment: str = ""
+    scheduled_date: Optional[str] = None  # YYYY-MM-DD, день внутри микроцикла
+    assigned_to_all: bool = True
+    assigned_athlete_ids: List[str] = field(default_factory=list)
+    assigned_group_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "exercise_type": self.exercise_type.value,
+            "duration_minutes": self.duration_minutes,
+            "volume_km": self.volume_km,
+            "intensity_percent": self.intensity_percent,
+            "hr_zone": self.hr_zone,
+            "weight_kg": self.weight_kg,
+            "sets": self.sets,
+            "reps": self.reps,
+            "rest_seconds": self.rest_seconds,
+            "equipment": self.equipment,
+        }
+        if self.scheduled_date:
+            data["scheduled_date"] = self.scheduled_date
+        if not self.assigned_to_all:
+            data["assigned_to_all"] = False
+        if self.assigned_athlete_ids:
+            data["assigned_athlete_ids"] = list(self.assigned_athlete_ids)
+        if self.assigned_group_ids:
+            data["assigned_group_ids"] = list(self.assigned_group_ids)
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Exercise":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Упражнение"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            exercise_type=_enum_from_value(ExerciseType, d.get("exercise_type"),
+                                           ExerciseType.ENDURANCE),
+            duration_minutes=d.get("duration_minutes", 0),
+            volume_km=d.get("volume_km", 0.0),
+            intensity_percent=d.get("intensity_percent", 0),
+            hr_zone=d.get("hr_zone", ""),
+            weight_kg=d.get("weight_kg", 0.0),
+            sets=d.get("sets", 0),
+            reps=d.get("reps", 0),
+            rest_seconds=d.get("rest_seconds", 0),
+            equipment=d.get("equipment", ""),
+            scheduled_date=d.get("scheduled_date"),
+            assigned_to_all=d.get("assigned_to_all", True),
+            assigned_athlete_ids=list(d.get("assigned_athlete_ids", [])),
+            assigned_group_ids=list(d.get("assigned_group_ids", [])),
+        )
+
+    def visible_to_athlete(self, plan: "TrainingPlan", athlete_id: str) -> bool:
+        return exercise_visible_to_athlete(plan, self, athlete_id)
+
+    def subtitle(self) -> str:
+        parts: List[str] = []
+        if self.duration_minutes:
+            parts.append(f"{self.duration_minutes} мин")
+        if self.volume_km:
+            parts.append(f"{_fmt_num(self.volume_km)} км")
+        if self.weight_kg:
+            parts.append(f"{_fmt_num(self.weight_kg)} кг")
+        if self.sets and self.reps:
+            parts.append(f"{self.sets}×{self.reps}")
+        if not parts:
+            parts.append(self.exercise_type.value)
+        return " · ".join(parts)
+
+
+@dataclass
+class Workout:
+    id: str = field(default_factory=new_id)
+    title: str = "Тренировка"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    workout_type: ExerciseType = ExerciseType.ENDURANCE
+    duration_minutes: int = 0
+    exercises: List[Exercise] = field(default_factory=list)
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    assigned_to_all: bool = True
+    assigned_athlete_ids: List[str] = field(default_factory=list)
+    assigned_group_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "workout_type": self.workout_type.value,
+            "duration_minutes": self.duration_minutes,
+            "exercises": [e.to_dict() for e in self.exercises],
+        }
+        if self.start_date:
+            data["start_date"] = self.start_date
+        if not self.assigned_to_all:
+            data["assigned_to_all"] = False
+        if self.assigned_athlete_ids:
+            data["assigned_athlete_ids"] = list(self.assigned_athlete_ids)
+        if self.assigned_group_ids:
+            data["assigned_group_ids"] = list(self.assigned_group_ids)
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Workout":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Тренировка"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            workout_type=_enum_from_value(ExerciseType, d.get("workout_type"),
+                                          ExerciseType.ENDURANCE),
+            duration_minutes=d.get("duration_minutes", 0),
+            exercises=[Exercise.from_dict(e) for e in d.get("exercises", [])],
+            start_date=d.get("start_date"),
+            assigned_to_all=d.get("assigned_to_all", True),
+            assigned_athlete_ids=list(d.get("assigned_athlete_ids", [])),
+            assigned_group_ids=list(d.get("assigned_group_ids", [])),
+        )
+
+    def visible_to_athlete(self, plan: "TrainingPlan", athlete_id: str) -> bool:
+        return exercise_visible_to_athlete(plan, self, athlete_id)
+
+    def subtitle(self) -> str:
+        return f"{len(self.exercises)} упр. · {self.workout_type.value}"
+
+
+@dataclass
+class Microcycle:
+    id: str = field(default_factory=new_id)
+    title: str = "Микроцикл"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    cycle_type: CycleType = CycleType.BASE
+    duration_days: int = 7
+    workouts: List[Workout] = field(default_factory=list)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "cycle_type": self.cycle_type.value,
+            "duration_days": self.duration_days,
+            "workouts": [w.to_dict() for w in self.workouts],
+        }
+        if self.start_date:
+            data["start_date"] = self.start_date
+        if self.end_date:
+            data["end_date"] = self.end_date
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Microcycle":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Микроцикл"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            cycle_type=_enum_from_value(CycleType, d.get("cycle_type"), CycleType.BASE),
+            duration_days=d.get("duration_days", 7),
+            workouts=[Workout.from_dict(w) for w in d.get("workouts", [])],
+            start_date=d.get("start_date"),
+            end_date=d.get("end_date"),
+        )
+
+    def subtitle(self) -> str:
+        return f"{len(self.workouts)} трен. · {self.duration_days} дн."
+
+
+@dataclass
+class Mesocycle:
+    id: str = field(default_factory=new_id)
+    title: str = "Мезоцикл"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    cycle_type: CycleType = CycleType.BASE
+    duration_weeks: int = 4
+    microcycles: List[Microcycle] = field(default_factory=list)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "cycle_type": self.cycle_type.value,
+            "duration_weeks": self.duration_weeks,
+            "microcycles": [m.to_dict() for m in self.microcycles],
+        }
+        if self.start_date:
+            data["start_date"] = self.start_date
+        if self.end_date:
+            data["end_date"] = self.end_date
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Mesocycle":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Мезоцикл"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            cycle_type=_enum_from_value(CycleType, d.get("cycle_type"), CycleType.BASE),
+            duration_weeks=d.get("duration_weeks", 4),
+            microcycles=[Microcycle.from_dict(m) for m in d.get("microcycles", [])],
+            start_date=d.get("start_date"),
+            end_date=d.get("end_date"),
+        )
+
+    def subtitle(self) -> str:
+        return f"{len(self.microcycles)} мкц · {self.duration_weeks} нед."
+
+
+@dataclass
+class Macrocycle:
+    id: str = field(default_factory=new_id)
+    title: str = "Макроцикл"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    duration_months: int = 3
+    mesocycles: List[Mesocycle] = field(default_factory=list)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "duration_months": self.duration_months,
+            "mesocycles": [m.to_dict() for m in self.mesocycles],
+        }
+        if self.start_date:
+            data["start_date"] = self.start_date
+        if self.end_date:
+            data["end_date"] = self.end_date
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Macrocycle":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Макроцикл"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            duration_months=d.get("duration_months", 3),
+            mesocycles=[Mesocycle.from_dict(m) for m in d.get("mesocycles", [])],
+            start_date=d.get("start_date"),
+            end_date=d.get("end_date"),
+        )
+
+    def subtitle(self) -> str:
+        return f"{len(self.mesocycles)} мзц · {self.duration_months} мес."
+
+
+@dataclass
+class AnnualPlan:
+    id: str = field(default_factory=new_id)
+    title: str = "Годичный план"
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    notes: str = ""
+    connections: List[Connection] = field(default_factory=list)
+
+    year: int = 2026
+    sport_type: str = ""
+    macrocycles: List[Macrocycle] = field(default_factory=list)
+    start_date: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "title": self.title,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
+            "notes": self.notes,
+            "connections": [c.to_dict() for c in self.connections],
+            "year": self.year,
+            "sport_type": self.sport_type,
+            "macrocycles": [m.to_dict() for m in self.macrocycles],
+        }
+        if self.start_date:
+            data["start_date"] = self.start_date
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AnnualPlan":
+        return cls(
+            id=d.get("id", new_id()),
+            title=d.get("title", "Годичный план"),
+            pos_x=d.get("pos_x", 0.0),
+            pos_y=d.get("pos_y", 0.0),
+            notes=d.get("notes", ""),
+            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
+            year=d.get("year", 2026),
+            sport_type=d.get("sport_type", ""),
+            macrocycles=[Macrocycle.from_dict(m) for m in d.get("macrocycles", [])],
+            start_date=d.get("start_date"),
+        )
+
+    def subtitle(self) -> str:
+        return f"{len(self.macrocycles)} макроциклов · {self.year}"
+
+
+# Любой элемент плана
+PlanElement = (Exercise, Workout, Microcycle, Mesocycle, Macrocycle, AnnualPlan)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Таблицы соответствий типов и уровней
+# ──────────────────────────────────────────────────────────────────────────
+
+_TYPE_BY_LEVEL: Dict[HierarchyLevel, Type] = {
+    HierarchyLevel.EXERCISE: Exercise,
+    HierarchyLevel.WORKOUT: Workout,
+    HierarchyLevel.MICROCYCLE: Microcycle,
+    HierarchyLevel.MESOCYCLE: Mesocycle,
+    HierarchyLevel.MACROCYCLE: Macrocycle,
+    HierarchyLevel.ANNUAL: AnnualPlan,
+}
+
+_LEVEL_BY_TYPE: Dict[Type, HierarchyLevel] = {v: k for k, v in _TYPE_BY_LEVEL.items()}
+
+# Имя атрибута со списком детей
+_CHILD_ATTR: Dict[Type, str] = {
+    Workout: "exercises",
+    Microcycle: "workouts",
+    Mesocycle: "microcycles",
+    Macrocycle: "mesocycles",
+    AnnualPlan: "macrocycles",
+}
+
+# Тип ключа сериализации для library_store
+TYPE_KEYS: Dict[Type, str] = {
+    Exercise: "exercise",
+    Workout: "workout",
+    Microcycle: "microcycle",
+    Mesocycle: "mesocycle",
+    Macrocycle: "macrocycle",
+    AnnualPlan: "annual",
+}
+TYPE_BY_KEY: Dict[str, Type] = {v: k for k, v in TYPE_KEYS.items()}
+
+
+def level_of(element) -> HierarchyLevel:
+    return _LEVEL_BY_TYPE[type(element)]
+
+
+def child_level(level: HierarchyLevel) -> Optional[HierarchyLevel]:
+    if level.value <= 1:
+        return None
+    return HierarchyLevel(level.value - 1)
+
+
+def child_attr(element) -> Optional[str]:
+    return _CHILD_ATTR.get(type(element))
+
+
+def get_children(element) -> List:
+    attr = child_attr(element)
+    return getattr(element, attr) if attr else []
+
+
+def make_element(level: HierarchyLevel, title: Optional[str] = None):
+    """Создаёт пустой элемент заданного уровня."""
+    cls = _TYPE_BY_LEVEL[level]
+    el = cls()
+    if title:
+        el.title = title
+    return el
+
+
+def regenerate_ids(element) -> None:
+    """Назначает новые id элементу и всем потомкам, переотображая связи детей.
+
+    Собственные (исходящие) связи верхнего элемента очищаются: после смены id
+    соседей они становятся недействительными.
+    """
+    element.id = new_id()
+    element.connections = []
+    _remap_children_ids(element)
+
+
+def _remap_children_ids(element) -> None:
+    id_map: Dict[str, str] = {}
+    children = get_children(element)
+    for child in children:
+        old = child.id
+        child.id = new_id()
+        id_map[old] = child.id
+    for child in children:
+        for conn in getattr(child, "connections", []):
+            conn.target_id = id_map.get(conn.target_id, conn.target_id)
+        _remap_children_ids(child)
+
+
+def clone_element(element):
+    """Возвращает независимую копию элемента с новыми идентификаторами."""
+    copy = type(element).from_dict(element.to_dict())
+    regenerate_ids(copy)
+    return copy
+
+
+def element_color(element) -> str:
+    if isinstance(element, Exercise):
+        return EXERCISE_TYPE_COLORS.get(element.exercise_type, "#5a6acf")
+    if isinstance(element, (Microcycle, Mesocycle)):
+        return CYCLE_TYPE_COLORS.get(element.cycle_type, "#5a6acf")
+    if isinstance(element, Workout):
+        return EXERCISE_TYPE_COLORS.get(element.workout_type, "#5a6acf")
+    if isinstance(element, Macrocycle):
+        return "#600095"
+    if isinstance(element, AnnualPlan):
+        return "#1e2786"
+    return "#524f9d"
+
+
+def element_type_key(element) -> str:
+    return TYPE_KEYS.get(type(element), "exercise")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Иерархия плана
+# ──────────────────────────────────────────────────────────────────────────
+
+class TrainingPlan:
+    """Контейнер всего плана с индексами id->элемент и id->родитель."""
+
+    def __init__(self, annual: Optional[AnnualPlan] = None,
+                 plan_start_date: Optional[str] = None,
+                 athletes: Optional[List[AthleteProfile]] = None,
+                 athlete_groups: Optional[List[AthleteGroup]] = None):
+        self.annual: AnnualPlan = annual or AnnualPlan()
+        self.plan_start_date: Optional[str] = plan_start_date
+        self.athletes: List[AthleteProfile] = list(athletes or [])
+        self.athlete_groups: List[AthleteGroup] = list(athlete_groups or [])
+        self._by_id: Dict[str, object] = {}
+        self._parent: Dict[str, Optional[str]] = {}
+        self.reindex()
+
+    # — индексация —
+    def reindex(self) -> None:
+        self._by_id.clear()
+        self._parent.clear()
+
+        def walk(element, parent_id: Optional[str]):
+            self._by_id[element.id] = element
+            self._parent[element.id] = parent_id
+            for child in get_children(element):
+                walk(child, element.id)
+
+        walk(self.annual, None)
+
+    # — доступ —
+    def get(self, element_id: Optional[str]):
+        if element_id is None:
+            return None
+        return self._by_id.get(element_id)
+
+    def parent_id(self, element_id: str) -> Optional[str]:
+        return self._parent.get(element_id)
+
+    def parent_of(self, element_id: str):
+        return self.get(self.parent_id(element_id))
+
+    def children_of(self, element_id: Optional[str]) -> List:
+        element = self.get(element_id)
+        if element is None:
+            return []
+        return get_children(element)
+
+    # — изменение —
+    def add_child(self, parent_id: Optional[str], element) -> bool:
+        parent = self.get(parent_id) if parent_id else self.annual
+        if parent is None:
+            return False
+        attr = child_attr(parent)
+        if not attr:
+            return False
+        getattr(parent, attr).append(element)
+        self._by_id[element.id] = element
+        self._parent[element.id] = parent.id
+
+        def index_children(el):
+            for child in get_children(el):
+                self._by_id[child.id] = child
+                self._parent[child.id] = el.id
+                index_children(child)
+
+        index_children(element)
+        return True
+
+    def remove(self, element_id: str) -> bool:
+        element = self.get(element_id)
+        if element is None or element is self.annual:
+            return False
+        parent = self.parent_of(element_id)
+        if parent is not None:
+            attr = child_attr(parent)
+            if attr:
+                lst = getattr(parent, attr)
+                if element in lst:
+                    lst.remove(element)
+            # удалить связи, ведущие к удаляемому элементу
+            for sibling in getattr(parent, attr, []):
+                sibling.connections = [
+                    c for c in sibling.connections if c.target_id != element_id
+                ]
+
+        def drop(el):
+            self._by_id.pop(el.id, None)
+            self._parent.pop(el.id, None)
+            for child in get_children(el):
+                drop(child)
+
+        drop(element)
+        return True
+
+    # — связи —
+    def add_connection(self, source_id: str, target_id: str,
+                       kind: str = "sequence") -> bool:
+        source = self.get(source_id)
+        target = self.get(target_id)
+        if source is None or target is None or source_id == target_id:
+            return False
+        if self.parent_id(source_id) != self.parent_id(target_id):
+            return False  # связи только между соседями одного контейнера
+        for c in source.connections:
+            if c.target_id == target_id:
+                return False  # связь уже есть
+        source.connections.append(Connection(target_id=target_id, kind=kind))
+        return True
+
+    def remove_connection(self, source_id: str, target_id: str) -> None:
+        source = self.get(source_id)
+        if source is None:
+            return
+        source.connections = [
+            c for c in source.connections if c.target_id != target_id
+        ]
+
+    # — сериализация —
+    def to_dict(self) -> dict:
+        data = {"version": 1, "annual": self.annual.to_dict()}
+        if self.plan_start_date:
+            data["plan_start_date"] = self.plan_start_date
+        if self.athletes:
+            data["athletes"] = [a.to_dict() for a in self.athletes]
+        if self.athlete_groups:
+            data["athlete_groups"] = [g.to_dict() for g in self.athlete_groups]
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrainingPlan":
+        annual = AnnualPlan.from_dict(d.get("annual", {}))
+        athletes = [AthleteProfile.from_dict(a) for a in d.get("athletes", [])]
+        groups = [AthleteGroup.from_dict(g) for g in d.get("athlete_groups", [])]
+        return cls(
+            annual=annual,
+            plan_start_date=d.get("plan_start_date"),
+            athletes=athletes,
+            athlete_groups=groups,
+        )
+
+    def athlete_by_id(self, athlete_id: str) -> Optional[AthleteProfile]:
+        for athlete in self.athletes:
+            if athlete.id == athlete_id:
+                return athlete
+        return None
+
+    def athlete_by_login(self, login: str) -> Optional[AthleteProfile]:
+        key = login.strip().lower()
+        if not key:
+            return None
+        for athlete in self.athletes:
+            if athlete.login.strip().lower() == key:
+                return athlete
+        return None
+
+    def duplicate_athlete_logins(self) -> List[str]:
+        seen: Dict[str, str] = {}
+        dupes: List[str] = []
+        for athlete in self.athletes:
+            key = athlete.login.strip().lower()
+            if not key:
+                continue
+            if key in seen:
+                dupes.append(key)
+            else:
+                seen[key] = athlete.id
+        return dupes
+
+    def _login_taken(self, login: str, except_id: Optional[str] = None) -> bool:
+        key = login.strip().lower()
+        if not key:
+            return True
+        for athlete in self.athletes:
+            if except_id and athlete.id == except_id:
+                continue
+            if athlete.login.strip().lower() == key:
+                return True
+        return False
+
+    def athlete_group_by_id(self, group_id: str) -> Optional[AthleteGroup]:
+        for group in self.athlete_groups:
+            if group.id == group_id:
+                return group
+        return None
+
+    def add_athlete_group(self, title: str) -> AthleteGroup:
+        group = AthleteGroup(title=title.strip() or "Группа")
+        self.athlete_groups.append(group)
+        return group
+
+    def rename_athlete_group(self, group_id: str, title: str) -> bool:
+        group = self.athlete_group_by_id(group_id)
+        if group is None:
+            return False
+        group.title = title.strip() or group.title
+        return True
+
+    def remove_athlete_group(self, group_id: str) -> bool:
+        if self.athlete_group_by_id(group_id) is None:
+            return False
+        self.athlete_groups = [g for g in self.athlete_groups if g.id != group_id]
+        for athlete in self.athletes:
+            athlete.group_ids = [gid for gid in athlete.group_ids if gid != group_id]
+        self._purge_assigned_group_id(group_id)
+        return True
+
+    def _purge_assigned_group_id(self, group_id: str) -> None:
+        for ex in iter_exercises(self):
+            if group_id in ex.assigned_group_ids:
+                ex.assigned_group_ids = [
+                    gid for gid in ex.assigned_group_ids if gid != group_id
+                ]
+        for element in self._by_id.values():
+            if isinstance(element, Workout):
+                if group_id in element.assigned_group_ids:
+                    element.assigned_group_ids = [
+                        gid for gid in element.assigned_group_ids if gid != group_id
+                    ]
+
+    def add_athlete(self, display_name: str, login: str,
+                    group_ids: Optional[List[str]] = None) -> Optional[AthleteProfile]:
+        login = login.strip()
+        if not login or self._login_taken(login):
+            return None
+        ids = [gid for gid in (group_ids or []) if self.athlete_group_by_id(gid)]
+        athlete = AthleteProfile(
+            display_name=display_name.strip() or login,
+            login=login,
+            group_ids=ids,
+        )
+        self.athletes.append(athlete)
+        return athlete
+
+    def update_athlete(self, athlete_id: str, display_name: str,
+                       login: str, *, gender: Optional[str] = None,
+                       group_ids: Optional[List[str]] = None) -> bool:
+        athlete = self.athlete_by_id(athlete_id)
+        if athlete is None:
+            return False
+        login = login.strip()
+        if not login or self._login_taken(login, except_id=athlete_id):
+            return False
+        athlete.display_name = display_name.strip() or login
+        athlete.login = login
+        if gender is not None:
+            athlete.gender = gender if gender in ("", ATHLETE_GENDER_MALE,
+                                                  ATHLETE_GENDER_FEMALE) else ""
+        if group_ids is not None:
+            athlete.group_ids = [
+                gid for gid in group_ids if self.athlete_group_by_id(gid)
+            ]
+        return True
+
+    def add_athlete_to_group(self, athlete_id: str, group_id: str) -> bool:
+        athlete = self.athlete_by_id(athlete_id)
+        if athlete is None or self.athlete_group_by_id(group_id) is None:
+            return False
+        if group_id not in athlete.group_ids:
+            athlete.group_ids.append(group_id)
+        return True
+
+    def remove_athlete_from_group(self, athlete_id: str, group_id: str) -> bool:
+        athlete = self.athlete_by_id(athlete_id)
+        if athlete is None:
+            return False
+        athlete.group_ids = [gid for gid in athlete.group_ids if gid != group_id]
+        return True
+
+    def find_athletes_by_query(self, query: str) -> List[AthleteProfile]:
+        key = query.strip().lower()
+        if not key:
+            return list(self.athletes)
+        out: List[AthleteProfile] = []
+        for athlete in self.athletes:
+            hay = f"{athlete.display_name} {athlete.login}".lower()
+            if key in hay:
+                out.append(athlete)
+        return out
+
+    def remove_athlete(self, athlete_id: str) -> bool:
+        if self.athlete_by_id(athlete_id) is None:
+            return False
+        self.athletes = [a for a in self.athletes if a.id != athlete_id]
+        for ex in iter_exercises(self):
+            if athlete_id in ex.assigned_athlete_ids:
+                ex.assigned_athlete_ids = [
+                    aid for aid in ex.assigned_athlete_ids if aid != athlete_id
+                ]
+        for element in self._by_id.values():
+            if isinstance(element, Workout):
+                if athlete_id in element.assigned_athlete_ids:
+                    element.assigned_athlete_ids = [
+                        aid for aid in element.assigned_athlete_ids
+                        if aid != athlete_id
+                    ]
+        return True
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Вспомогательные функции
+# ──────────────────────────────────────────────────────────────────────────
+
+def iter_exercises(plan: TrainingPlan) -> Iterator[Exercise]:
+    """Все упражнения плана в обходе дерева."""
+
+    def walk(element) -> Iterator[Exercise]:
+        if isinstance(element, Exercise):
+            yield element
+            return
+        for child in get_children(element):
+            yield from walk(child)
+
+    yield from walk(plan.annual)
+
+
+def exercises_for_athlete(plan: TrainingPlan, athlete_id: str) -> List[Exercise]:
+    """Упражнения, видимые спортсmenу (вся группа / подгруппы / персонально)."""
+    return [ex for ex in iter_exercises(plan) if ex.visible_to_athlete(plan, athlete_id)]
+
+
+def _enum_from_value(enum_cls, value, default):
+    if value is None:
+        return default
+    for item in enum_cls:
+        if item.value == value or item.name == value:
+            return item
+    return default
+
+
+def _fmt_num(value) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
